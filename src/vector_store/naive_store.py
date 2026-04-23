@@ -1,6 +1,8 @@
 import numpy as np
 from typing import Tuple, List, Dict
 import logging
+import os
+import json
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -8,78 +10,113 @@ logger.setLevel(logging.INFO)
 
 # TODO: Change to ChromaDB, note that it only supports HNSW index.
 class NaiveStore:
-    def __init__(self, embedding_dim: int):
-        self.embedding_dim = embedding_dim
-        self.index: Dict[int, np.ndarray] = {}
-        self.payload_mapping: Dict[int, str] = {}
+    def __init__(self, embedding_dim: int):
+        self.embedding_dim = embedding_dim
+        self.index: Dict[int, np.ndarray] = {}
+        self.payload_mapping: Dict[int, str] = {}
 
-    def add(self, embedding: np.ndarray, payload: str, id: int):
-        # Add embeddings into the index
-        if embedding.shape[0] != self.embedding_dim:
-            raise ValueError(
-                f"Embedding dimension mismatch. Expected {self.embedding_dim}, got {embedding.shape[0]}"
-            )
-        normalized_embedding = self.normalize_L2(embedding)
-        if id in self.index:
-            logger.warning(f"Overwriting embedding for id {id}")
-        self.index[id] = normalized_embedding
-        if id in self.payload_mapping:
-            logger.warning(f"Overwriting payload for id {id}")
-        self.payload_mapping[id] = payload
+    def add(self, embedding: np.ndarray, payload: str, id: int):
+        # Add embeddings into the index
+        if embedding.shape[0] != self.embedding_dim:
+            raise ValueError(
+                f"Embedding dimension mismatch. Expected {self.embedding_dim}, got {embedding.shape[0]}"
+            )
+        normalized_embedding = self.normalize_L2(embedding)
+        if id in self.index:
+            logger.warning(f"Overwriting embedding for id {id}")
+        self.index[id] = normalized_embedding
+        if id in self.payload_mapping:
+            logger.warning(f"Overwriting payload for id {id}")
+        self.payload_mapping[id] = payload
 
-    def list_memories(self) -> List[str]:
-        return list(self.payload_mapping.values())
-        
-    def search(
-        self, q_embedding: np.ndarray, top_k: int
-    ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-        # Return scores and ids
-        q_embedding = self.normalize_L2(q_embedding)
+    def list_memories(self) -> List[str]:
+        return list(self.payload_mapping.values())
 
-        if q_embedding.shape[0] != self.embedding_dim:
-            raise ValueError(
-                f"Embedding dimension mismatch. Expected {self.embedding_dim}, got {q_embedding.shape[0]}"
-            )
+    def search(
+        self, q_embedding: np.ndarray, top_k: int
+    ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+        # Return scores and ids
+        q_embedding = self.normalize_L2(q_embedding)
 
-        scores = []
-        ids = []
-        # Calculate cosine similarity with all stored embeddings
-        # TODO: This can be optimized using numpy batch computation
-        for id, stored_embedding in self.index.items():
-            # Cosine similarity = dot product of normalized vectors
-            similarity = np.dot(q_embedding, stored_embedding)
-            scores.append(similarity)
-            ids.append(id)
+        if q_embedding.shape[0] != self.embedding_dim:
+            raise ValueError(
+                f"Embedding dimension mismatch. Expected {self.embedding_dim}, got {q_embedding.shape[0]}"
+            )
 
-        # Convert to numpy arrays
-        scores = np.array(scores)
-        ids = np.array(ids)
+        scores = []
+        ids = []
+        # Calculate cosine similarity with all stored embeddings
+        # TODO: This can be optimized using numpy batch computation
+        for id, stored_embedding in self.index.items():
+            # Cosine similarity = dot product of normalized vectors
+            similarity = np.dot(q_embedding, stored_embedding)
+            scores.append(similarity)
+            ids.append(id)
 
-        # Sort by similarity (descending order)
-        sorted_indices = np.argsort(scores)[::-1][:top_k]
+        # Convert to numpy arrays
+        scores = np.array(scores)
+        ids = np.array(ids)
 
-        # Return top_k results
-        top_k = min(top_k, len(scores))
-        return (
-            scores[sorted_indices[:top_k]],
-            ids[sorted_indices[:top_k]],
-            [self.payload_mapping[id] for id in ids[sorted_indices[:top_k]]],
-        )
+        # Sort by similarity (descending order)
+        sorted_indices = np.argsort(scores)[::-1][:top_k]
 
-    def remove(self, id: List[int]):
-        # Remove embeddings from the index by id
-        for single_id in id:
-            if single_id in self.index and single_id in self.payload_mapping:
-                del self.payload_mapping[single_id]
-                del self.index[single_id]
-            else:
-                logger.warning(
-                    f"Id {single_id} not found in the index or payload mapping, which should not happen"
-                )
+        # Return top_k results
+        top_k = min(top_k, len(scores))
+        return (
+            scores[sorted_indices[:top_k]],
+            ids[sorted_indices[:top_k]],
+            [self.payload_mapping[id] for id in ids[sorted_indices[:top_k]]],
+        )
 
-    def normalize_L2(self, embedding: np.ndarray) -> np.ndarray:
-        return embedding / np.linalg.norm(embedding)
+    def remove(self, id: List[int]):
+        # Remove embeddings from the index by id
+        for single_id in id:
+            if single_id in self.index and single_id in self.payload_mapping:
+                del self.payload_mapping[single_id]
+                del self.index[single_id]
+            else:
+                logger.warning(
+                    f"Id {single_id} not found in the index or payload mapping, which should not happen"
+                )
 
-    def reset(self):
-        self.index = {}
-        self.payload_mapping = {}
+    def normalize_L2(self, embedding: np.ndarray) -> np.ndarray:
+        return embedding / np.linalg.norm(embedding)
+
+    def reset(self):
+        self.index = {}
+        self.payload_mapping = {}
+
+    def save(self, dir_path: str):
+        """Save index and payload mapping to disk."""
+        os.makedirs(dir_path, exist_ok=True)
+        # Save embeddings as numpy array (id -> embedding)
+        if self.index:
+            ids = sorted(self.index.keys())
+            embeddings = np.array([self.index[i] for i in ids])
+            np.save(os.path.join(dir_path, "naive_store_embeddings.npy"), embeddings)
+            with open(os.path.join(dir_path, "naive_store_ids.json"), "w") as f:
+                json.dump(ids, f)
+        # Save payloads
+        with open(os.path.join(dir_path, "naive_store_payloads.json"), "w") as f:
+            json.dump(self.payload_mapping, f, indent=2)
+        logger.info(f"NaiveStore saved to {dir_path}")
+
+    def load(self, dir_path: str):
+        """Load index and payload mapping from disk."""
+        ids_path = os.path.join(dir_path, "naive_store_ids.json")
+        embeddings_path = os.path.join(dir_path, "naive_store_embeddings.npy")
+        payloads_path = os.path.join(dir_path, "naive_store_payloads.json")
+
+        if not os.path.exists(ids_path) or not os.path.exists(payloads_path):
+            logger.warning(f"NaiveStore files not found in {dir_path}")
+            return
+
+        with open(ids_path, "r") as f:
+            ids = json.load(f)
+        with open(payloads_path, "r") as f:
+            self.payload_mapping = json.load(f)
+
+        if os.path.exists(embeddings_path):
+            embeddings = np.load(embeddings_path)
+            self.index = {i: embeddings[idx] for idx, i in enumerate(ids)}
+        logger.info(f"NaiveStore loaded from {dir_path}")
